@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pikachu Surf</title>
+<style>
+  html, body {
+    height: 100%;
+    margin: 0;
+    display: flex;  
+    justify-content: center;
+    align-items: center;
+    background: linear-gradient(to bottom, #87cefa, #bde0ff, #e6f9ff);
+  }
+  canvas {
+    background: transparent;
+    border: 1px solid #0077cc;
+  }
+</style>
+</head>
+<body>
+<canvas id="game" width="900" height="300"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const groundY = 260;
+
+let dino = {x:50, y:groundY-60, w:50, h:60, vy:0, jumping:false, crouching:false};
+let obstacles = [];
+let birds = [];
+let gravity = 0.6;
+let baseSpeed = 6;
+let speed = baseSpeed;
+let frame = 0;
+let score = 0;
+let gameOver = false;
+let isNight = false;
+let transition = 0;
+
+// === Áudio ===
+const musicaDia = new Audio("musica_dia.mp3");
+const musicaNoite = new Audio("musica_noite.mp3");
+musicaDia.loop = true;
+musicaNoite.loop = true;
+musicaDia.volume = 0.6;
+musicaNoite.volume = 0;
+musicaDia.play().catch(()=>console.log("Música aguardando interação do usuário."));
+
+function mudarMusica(paraNoite) {
+  const fadeInterval = setInterval(() => {
+    if (paraNoite) {
+      if (musicaDia.volume > 0) musicaDia.volume = Math.max(0, musicaDia.volume - 0.02);
+      if (musicaNoite.volume < 0.6) {
+        if (musicaNoite.paused) musicaNoite.play();
+        musicaNoite.volume = Math.min(0.6, musicaNoite.volume + 0.02);
+      }
+      if (musicaDia.volume <= 0 && musicaNoite.volume >= 0.6) clearInterval(fadeInterval);
+    } else {
+      if (musicaNoite.volume > 0) musicaNoite.volume = Math.max(0, musicaNoite.volume - 0.02);
+      if (musicaDia.volume < 0.6) {
+        if (musicaDia.paused) musicaDia.play();
+        musicaDia.volume = Math.min(0.6, musicaDia.volume + 0.02);
+      }
+      if (musicaNoite.volume <= 0 && musicaDia.volume >= 0.6) clearInterval(fadeInterval);
+    }
+  }, 100);
+}
+
+// === Carregar imagens ===
+function loadImage(name) {
+  const base = window.location.href.substring(0, window.location.href.lastIndexOf('/') + 1);
+  const img = new Image();
+  img.src = base + name;
+  return img;
+}
+
+const pikachuImg = loadImage("pikachu.png");
+const pikachuCrouchImg = loadImage("pikachu_agachado.png");
+const seaImage = loadImage("mar.png");
+const sunImage = loadImage("sol.png");
+const moonImage = loadImage("lua.png");
+const obstacleSprites = [
+  loadImage("obistaculo1.png"),
+  loadImage("obistaculo2.png"),
+  loadImage("obistaculo3.png")
+];
+
+// === Murkrow voador ===
+const murkrowFrames = [
+  loadImage("murkrow1.png"),
+  loadImage("murkrow2.png"),
+  loadImage("murkrow3.png")
+];
+let birdFrame = 0;
+let birdFrameRate = 8;
+
+// === Função para adicionar pássaros com altura segura e maior chance de voar baixo ===
+function addBird() {
+  const minLowY = groundY - dino.h - 30; // altura baixa
+  const maxLowY = groundY - dino.h - 70; // altura média baixa
+  const maxHighY = 80; // altura alta
+  let y;
+  if (Math.random() < 0.7) { // 70% chance de ser baixo
+    y = minLowY - Math.random() * (minLowY - maxLowY);
+  } else { // 30% chance de ser alto
+    y = maxLowY - Math.random() * (maxLowY - maxHighY);
+  }
+  birds.push({
+    x: canvas.width + 150,
+    y: y,
+    w: 50,
+    h: 50,
+    speed: speed + 2 + Math.random()
+  });
+}
+
+function addObstacle() {
+  const index = Math.floor(Math.random() * obstacleSprites.length);
+  const sprite = obstacleSprites[index];
+  const h = dino.h * 1.3;
+  const w = dino.w * 1.3;
+  obstacles.push({ 
+    x: canvas.width, 
+    y: groundY - h + 15, 
+    w: w, 
+    h: h, 
+    sprite: sprite 
+  });
+}
+
+function jump() {
+  if (!dino.jumping && !dino.crouching) { 
+    dino.vy = -12;
+    dino.jumping = true; 
+  }
+}
+
+document.addEventListener('keydown', e=>{
+  if(e.code==='Space' || e.code==='ArrowUp') jump();
+  if(e.code==='ArrowDown' && !dino.jumping) dino.crouching = true;
+  if(e.code==='KeyR' && gameOver) restart();
+  if ((musicaDia.paused || musicaNoite.paused) && e.code !== 'KeyR') {
+    musicaDia.play();
+    musicaNoite.play();
+  }
+});
+document.addEventListener('keyup', e=>{
+  if(e.code==='ArrowDown') dino.crouching = false;
+});
+
+function restart() {
+  obstacles = [];
+  birds = [];
+  frame = 0;
+  score = 0;
+  speed = baseSpeed;
+  gameOver = false;
+  isNight = false;
+  transition = 0;
+  dino.y = groundY - dino.h;
+  dino.vy = 0;
+  dino.jumping = false;
+  addObstacle();
+  mudarMusica(false);
+}
+
+function checkCollision(a, b) {
+  const paddingDino = 12;
+  const paddingObs = 8;
+  const dinoLeft = a.x + paddingDino;
+  const dinoRight = a.x + a.w - paddingDino;
+  const dinoTop = a.y + paddingDino;
+  const dinoBottom = a.y + a.h - paddingDino;
+  const obsLeft = b.x + paddingObs;
+  const obsRight = b.x + b.w - paddingObs;
+  const obsTop = b.y + paddingObs;
+  const obsBottom = b.y + b.h - paddingObs;
+  return (
+    dinoRight > obsLeft &&
+    dinoLeft < obsRight &&
+    dinoBottom > obsTop &&
+    dinoTop < obsBottom
+  );
+}
+
+function update() {
+  if(!gameOver){
+    frame++;
+    score += 0.5;
+
+    // === Ciclo dia/noite ===
+    if (Math.floor(score) % 1400 < 700 && isNight) {
+      isNight = false;
+      mudarMusica(false);
+    } else if (Math.floor(score) % 1400 >= 700 && !isNight) {
+      isNight = true;
+      mudarMusica(true);
+    }
+
+    transition += isNight ? 0.02 : -0.02;
+    transition = Math.max(0, Math.min(1, transition));
+    speed = baseSpeed + transition * 2;
+
+    dino.vy += gravity;
+    dino.y += dino.vy;
+
+    if(dino.crouching && !dino.jumping) dino.h = 40;
+    else dino.h = 60;
+
+    if(dino.y + dino.h >= groundY) {
+      dino.y = groundY - dino.h;
+      dino.vy = 0;
+      dino.jumping = false;
+    }
+
+    const freq = isNight ? 45 : 70;
+    if(frame % freq === 0) {
+      const birdNear = birds.some(b => b.x > canvas.width - 200);
+      if (!birdNear) addObstacle();
+    }
+
+    // Pássaros à noite
+    if(isNight && Math.random() < 0.03) {
+      const obstacleNear = obstacles.some(o => o.x > canvas.width - 300);
+      if (!obstacleNear) addBird();
+    }
+
+    // Obstáculos
+    for(let i=obstacles.length-1;i>=0;i--){
+      let o = obstacles[i];
+      o.x -= speed;
+      if(o.x + o.w < 0) obstacles.splice(i,1);
+      if(o.sprite.complete && o.sprite.naturalWidth > 0 && checkCollision(dino, o)) {
+        gameOver = true;
+        musicaDia.pause();
+        musicaNoite.pause();
+      }
+    }
+
+    // Pássaros
+    for(let i = birds.length - 1; i >= 0; i--){
+      let b = birds[i];
+      b.x -= b.speed;
+      if(b.x + b.w < 0) birds.splice(i,1);
+      if(checkCollision(dino, b)){
+        gameOver = true;
+        musicaDia.pause();
+        musicaNoite.pause();
+      }
+    }
+
+    if(frame % birdFrameRate === 0){
+      birdFrame = (birdFrame + 1) % murkrowFrames.length;
+    }
+  }
+}
+
+function draw() {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+
+  const dayColors = ["#87cefa","#bde0ff","#e6f9ff"];
+  const nightColors = ["#0a0a2a","#151540","#1c1c4d"];
+  function lerpColor(c1, c2, t) {
+    const c1rgb = parseInt(c1.slice(1),16);
+    const c2rgb = parseInt(c2.slice(1),16);
+    const r1 = (c1rgb >> 16) & 0xFF, g1 = (c1rgb >> 8) & 0xFF, b1 = c1rgb & 0xFF;
+    const r2 = (c2rgb >> 16) & 0xFF, g2 = (c2rgb >> 8) & 0xFF, b2 = c2rgb & 0xFF;
+    const r = Math.round(r1 + (r2 - r1)*t);
+    const g = Math.round(g1 + (g2 - g1)*t);
+    const b = Math.round(b1 + (b2 - b1)*t);
+    return `rgb(${r},${g},${b})`;
+  }
+
+  const skyGradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  skyGradient.addColorStop(0, lerpColor(dayColors[0], nightColors[0], transition));
+  skyGradient.addColorStop(0.5, lerpColor(dayColors[1], nightColors[1], transition));
+  skyGradient.addColorStop(1, lerpColor(dayColors[2], nightColors[2], transition));
+  ctx.fillStyle = skyGradient;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const celestialY = 50 + Math.sin(frame * 0.02) * 8;
+  const celestialX = canvas.width - 120 + Math.cos(frame * 0.015) * 5;
+  if (transition < 0.5 && sunImage.complete) {
+    ctx.globalAlpha = 1 - transition * 2;
+    ctx.drawImage(sunImage, celestialX, celestialY, 80, 80);
+  } else if (moonImage.complete) {
+    ctx.globalAlpha = (transition - 0.5) * 2;
+    ctx.drawImage(moonImage, celestialX, celestialY, 80, 80);
+    ctx.globalAlpha = 1;
+    for (let i = 0; i < 30; i++) {
+      const x = (i * 30 + (frame * 0.5)) % canvas.width;
+      const y = (i * 20 + (frame * 0.3)) % 150;
+      ctx.fillStyle = Math.random() > 0.5 ? "white" : "rgba(255,255,255,0.3)";
+      ctx.fillRect(x, y, 2, 2);
+    }
+  }
+  ctx.globalAlpha = 1;
+
+  if(seaImage.complete && seaImage.naturalWidth > 0){
+    ctx.drawImage(seaImage, 0, groundY, canvas.width, canvas.height - groundY);
+  } else {
+    ctx.fillStyle='#0099ff';
+    ctx.fillRect(0,groundY,canvas.width,canvas.height-groundY);
+  }
+
+  const currentPikachu = dino.crouching ? pikachuCrouchImg : pikachuImg;
+  let offsetY = Math.sin(frame * 0.12) * 1;
+  let offsetX = Math.cos(frame * 0.08) * 0.7;
+  let tilt = Math.sin(frame * 0.1) * 0.05;
+
+  ctx.save();
+  ctx.translate(dino.x + dino.w/2 + offsetX, dino.y + dino.h/2 + offsetY);
+  ctx.rotate(tilt);
+  if(currentPikachu.complete && currentPikachu.naturalWidth > 0){
+    ctx.drawImage(currentPikachu, -dino.w/2, -dino.h/2, dino.w, dino.h);
+  } else {
+    ctx.fillStyle = '#4CAF50';
+    ctx.fillRect(-dino.w/2, -dino.h/2, dino.w, dino.h);
+  }
+  ctx.restore();
+
+  obstacles.forEach(o=>{
+    if(o.sprite.complete && o.sprite.naturalWidth > 0){
+      ctx.drawImage(o.sprite, o.x, o.y, o.w, o.h);
+    }
+  });
+
+  birds.forEach(b => {
+    const img = murkrowFrames[birdFrame];
+    if (img.complete && img.naturalWidth > 0) {
+      ctx.drawImage(img, b.x, b.y, b.w, b.h);
+    }
+  });
+
+  ctx.fillStyle = isNight ? 'white' : 'black';
+  ctx.font='18px Arial';
+  ctx.fillText('Pontuação: '+Math.floor(score), 10, 25);
+
+  if(gameOver){
+    ctx.fillStyle='black';
+    ctx.font='40px Arial';
+    ctx.fillText('GAME OVER', canvas.width/2 - 120, canvas.height/2);
+    ctx.font='20px Arial';
+    ctx.fillText('Pressione R para reiniciar', canvas.width/2 - 110, canvas.height/2 + 30);
+  }
+}
+
+addObstacle();
+function loop(){ update(); draw(); requestAnimationFrame(loop); }
+loop();
+</script>
+</body>
+</html>
